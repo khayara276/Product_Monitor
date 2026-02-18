@@ -8,6 +8,7 @@ import requests
 import sqlite3
 import concurrent.futures
 import sys
+import subprocess
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -23,23 +24,28 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 # ==========================================
 # ⚙️ CONFIGURATION (ENV VARS)
 # ==========================================
-# GitHub Secrets se data uthayega
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 COOKIES_JSON = os.getenv('COOKIES_JSON') 
 
 DB_PATH = os.path.join('data', 'shein_products.db')
 
-# GHA par Headless zaroori hai
 HEADLESS_MODE = True 
 
-# PERFORMANCE TUNING (GitHub Runners have 7GB RAM! 🚀)
-NUM_THREADS = 50        # Wapis high speed threads
+# 🔥 TURBO MODE CONFIGURATION
+# 50 Threads + Polymorphic Rotation = Max Speed
+NUM_THREADS = 50         
 BATCH_SIZE = 50         
-CYCLE_DELAY = 0.5       
+CYCLE_DELAY = 0.1       
 
-# Priority Sizes
-PRIORITY_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "28", "30", "32", "34", "36"]
+PRIORITY_SIZES = ["M", "L", "XL", "32", "34", "36"]
+
+# Massive list of fingerprints to rotate (Confuse the firewall)
+BROWSER_FINGERPRINTS = [
+    "chrome100", "chrome110", "chrome119", "chrome120", "chrome124",
+    "edge99", "edge101", 
+    "safari15_3", "safari17_0"
+]
 
 # ==========================================
 # 🛠️ UTILITY FUNCTIONS
@@ -68,7 +74,7 @@ def send_telegram(message, image_url=None, button_url=None):
     except Exception: pass
 
 # ==========================================
-# 🚀 DB MONITOR CLASS (GHA EDITION)
+# 🚀 DB MONITOR CLASS (TURBO EDITION)
 # ==========================================
 
 class DBStockMonitor:
@@ -82,25 +88,42 @@ class DBStockMonitor:
         self.processed_count = 0
         self.lock = threading.Lock()
         
-        # Start with Stealth Mode
-        self.use_python_mode = True 
+        # Adaptive Speed Control
+        self.error_streak = 0
+        self.consecutive_success = 0
         
-        # Use chrome120 for better stealth
-        self.session = crequests.Session(impersonate="chrome120")
-        self.setup_session()
+        # Always prefer Python mode for speed
+        self.use_python_mode = True 
         
         self.init_database()
 
-    def setup_session(self):
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Referer': 'https://sheinindia.ajio.com/',
-            'Origin': 'https://sheinindia.ajio.com'
-        })
-
     def init_database(self):
         if not os.path.exists('data'): os.makedirs('data')
+        
+        if os.path.exists(DB_PATH):
+            try:
+                with open(DB_PATH, 'rb') as f:
+                    header = f.read(100)
+                
+                if b'version https://git-lfs.github.com/spec/v1' in header:
+                    print("⚠️ LFS Pointer detected! Pulling DB...", flush=True)
+                    try:
+                        subprocess.run(["git", "lfs", "pull"], check=True)
+                        print("✅ LFS Pull Successful!", flush=True)
+                    except Exception:
+                        print("❌ LFS Pull Failed. Ensure workflow has 'lfs: true'.", flush=True)
+                        sys.exit(1)
+
+                with open(DB_PATH, 'rb') as f:
+                    header = f.read(16)
+                if b'SQLite format 3' not in header:
+                    print("❌ FATAL: Invalid DB file.", flush=True)
+                    sys.exit(1)
+                    
+            except Exception as e:
+                print(f"⚠️ DB Check Error: {e}", flush=True)
+                sys.exit(1)
+
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
@@ -127,54 +150,22 @@ class DBStockMonitor:
         co = ChromiumOptions()
         co.set_local_port(port)
         co.set_argument('--no-sandbox')
-        co.set_argument('--headless') 
+        co.set_argument('--headless=new') 
         co.set_argument('--disable-gpu')
-        co.set_argument('--disable-dev-shm-usage')
+        co.set_argument('--disable-blink-features=AutomationControlled') 
         co.set_argument('--blink-settings=imagesEnabled=false')
         return co
 
     def init_browser(self):
         if self.browser: return True
-        
-        print("🚀 Initializing Browser...", flush=True)
+        print("🚀 Initializing Backup Browser...", flush=True)
         try:
             port = random.randint(40000, 50000)
             co = self.get_browser_options(port)
             self.browser = ChromiumPage(co)
-            BASE_URL = 'https://sheinindia.ajio.com/'
-            
-            if COOKIES_JSON:
-                try:
-                    cookies_list = json.loads(COOKIES_JSON)
-                    self.browser.get(BASE_URL)
-                    self.browser.set.cookies(cookies_list)
-                    self.browser.refresh()
-                    print("✅ Cookies injected.", flush=True)
-                except Exception as e:
-                    print(f"⚠️ Cookie Error: {e}", flush=True)
-            
-            self.sync_cookies()
             return True
-        except Exception as e:
-            print(f"❌ Browser Init Failed: {e}", flush=True)
+        except Exception:
             return False
-
-    def sync_cookies(self):
-        print("🔄 Syncing Session...", flush=True)
-        try:
-            cookies = self.browser.cookies()
-            cookies_dict = {c['name']: c['value'] for c in cookies}
-            self.session.cookies.update(cookies_dict)
-            
-            ua = self.browser.run_js("return navigator.userAgent")
-            if ua: self.session.headers.update({'User-Agent': ua})
-            
-            if 'A' in cookies_dict:
-                self.use_python_mode = True
-                print("   ✅ Auth Token Valid. Stealth Mode ON.", flush=True)
-            else:
-                print("   ⚠️ Auth Token Missing.", flush=True)
-        except: pass
 
     def get_all_products(self):
         conn = sqlite3.connect(DB_PATH)
@@ -184,8 +175,12 @@ class DBStockMonitor:
         conn.close()
         return [row for row in rows if row[0] not in self.ignore_list]
 
-    # --- HYBRID FETCHING ENGINE ---
+    # --- TURBO FETCHING ENGINE ---
     def hybrid_fetch_batch(self, pids):
+        # Only slow down if we hit MAJOR blocks
+        if self.error_streak > 10:
+            time.sleep(1) # Brief cool down
+            
         if self.use_python_mode:
             return self.fetch_batch_stealth(pids)
         else:
@@ -196,9 +191,25 @@ class DBStockMonitor:
         forbidden_count = 0
         
         def fetch_one(pid):
+            # 🔥 TURBO: Micro-delay only (0.01s - 0.1s)
+            # This is extremely fast but relies on fingerprint rotation to stay safe
+            time.sleep(random.uniform(0.01, 0.1))
+            
             try:
+                fingerprint = random.choice(BROWSER_FINGERPRINTS)
                 url = f"https://sheinindia.ajio.com/api/p/{pid}?fields=SITE"
-                res = self.session.get(url, timeout=10)
+                
+                res = crequests.get(
+                    url, 
+                    impersonate=fingerprint,
+                    headers={
+                        'Referer': 'https://sheinindia.ajio.com/',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Cache-Control': 'no-cache'
+                    },
+                    timeout=5 # Fail fast
+                )
+                
                 if res.status_code == 200:
                     return {'id': pid, 'status': 200, 'data': res.json()}
                 elif res.status_code == 403:
@@ -207,41 +218,60 @@ class DBStockMonitor:
             except:
                 return {'id': pid, 'status': 'ERR'}
 
-        # GHA has good CPU, using 20 threads for internal batch
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(pids), 20)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
             future_to_pid = {executor.submit(fetch_one, pid): pid for pid in pids}
             for future in concurrent.futures.as_completed(future_to_pid):
                 res = future.result()
                 results.append(res)
                 if res['status'] == 403: forbidden_count += 1
 
-        if forbidden_count > 0:
-            print(f"   ⚠️ 403 Detected. Switching to Browser...", flush=True)
-            self.use_python_mode = False
-            return self.fetch_batch_browser(pids)
+        # Turbo Logic: Higher tolerance for errors before switching
+        if forbidden_count > 5:
+            self.error_streak += 1
+            self.consecutive_success = 0
+            print(f"   ⚠️ 403 Spike ({forbidden_count}).", flush=True)
+            if self.error_streak > 5:
+                # Only switch if persistently blocked
+                print("   🔻 Switching to Slow Mode...", flush=True)
+                self.use_python_mode = False
+        else:
+            self.consecutive_success += 1
+            if self.consecutive_success > 3:
+                self.error_streak = 0
         
         return results
 
     def fetch_batch_browser(self, pids):
         if not self.browser: self.init_browser()
         try:
-            if random.random() < 0.1: self.sync_cookies() 
             pid_list_str = json.dumps(pids)
             js_code = f"""
                 const pids = {pid_list_str};
-                const requests = pids.map(pid => {{
-                    return fetch(`https://sheinindia.ajio.com/api/p/${{pid}}?fields=SITE`, {{
-                         headers: {{'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}}
-                    }}).then(res => {{
-                        if(res.status === 403) return {{id: pid, status: 403}};
-                        if(!res.ok) return {{id: pid, status: 'ERR'}};
-                        return res.json().then(data => ({{id: pid, status: 200, data: data}}));
-                    }}).catch(e => ({{id: pid, status: 'ERR'}}));
-                }});
-                return Promise.all(requests).then(results => JSON.stringify(results));
+                const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+                async function fetchAll() {{
+                    const results = [];
+                    for (const pid of pids) {{
+                        await wait(100); // 0.1s delay in browser (Faster)
+                        try {{
+                            const res = await fetch(`https://sheinindia.ajio.com/api/p/${{pid}}?fields=SITE`);
+                            if(res.status === 403) {{ results.push({{id: pid, status: 403}}); break; }}
+                            if(res.ok) {{
+                                const data = await res.json();
+                                results.push({{id: pid, status: 200, data: data}});
+                            }} else {{ results.push({{id: pid, status: 'ERR'}}); }}
+                        }} catch(e) {{ results.push({{id: pid, status: 'ERR'}}); }}
+                    }}
+                    return JSON.stringify(results);
+                }}
+                return fetchAll();
             """
             result_str = self.browser.latest_tab.run_js(js_code, timeout=60)
-            if result_str: return json.loads(result_str)
+            if result_str: 
+                results = json.loads(result_str)
+                # Try to switch back to Turbo Mode ASAP
+                if len(results) > 0 and not any(r['status'] == 403 for r in results):
+                     self.use_python_mode = True
+                return results
         except: pass
         return []
 
@@ -267,13 +297,13 @@ class DBStockMonitor:
                     with self.lock:
                         self.processed_count += len(batch_items)
                         pct = (self.processed_count / self.total_products) * 100 if self.total_products else 0
-                        mode_icon = "🚀" if self.use_python_mode else "🐢"
-                        if self.processed_count % 500 < BATCH_SIZE:
-                            print(f"   {mode_icon} Progress: {self.processed_count}/{self.total_products} ({pct:.1f}%)", end='\r', flush=True)
+                        mode_icon = "⚡" if self.use_python_mode else "🐢"
+                        if self.processed_count % 200 < BATCH_SIZE: 
+                            print(f"   {mode_icon} Turbo: {self.processed_count}/{self.total_products} ({pct:.1f}%)", end='\r', flush=True)
 
                 finally:
                     self.batch_queue.task_done()
-                    time.sleep(0.01) # Very small delay for speed
+                    time.sleep(0.01)
 
             except Exception: pass
 
@@ -296,7 +326,6 @@ class DBStockMonitor:
                     if status in ['inStock', 'lowStock']: current_stock[size] = qty
                     else: current_stock[size] = 0
 
-            # Alert Logic
             current_sig = ",".join([f"{k}:{v}" for k, v in sorted(current_stock.items())])
             last_sig = self.stock_cache.get(pid)
             
@@ -342,9 +371,8 @@ class DBStockMonitor:
         except Exception as e: pass
 
     def auto_cleaner(self):
-        """Clears ignore list every 6 hours"""
         while self.running:
-            wait_time = 6 * 3600 # 6 hours fixed for GHA
+            wait_time = 6 * 3600 
             print(f"\n⏰ Cleaner scheduled in 6 hours...", flush=True)
             time.sleep(wait_time)
             with self.lock:
@@ -354,16 +382,13 @@ class DBStockMonitor:
 
     def start(self):
         print("="*60, flush=True)
-        print("🚀 SHEIN MONITOR: GHA SPEED EDITION", flush=True)
+        print("🚀 SHEIN MONITOR: TURBO SPEED EDITION", flush=True)
         print(f"📦 Batch Size: {BATCH_SIZE} | Workers: {NUM_THREADS}", flush=True)
         print("="*60, flush=True)
 
         threading.Thread(target=self.auto_cleaner, daemon=True).start()
 
-        # Init Browser & Sync
-        self.init_browser()
-        
-        print(f"\n🧵 Launching {NUM_THREADS} Speed Workers...", flush=True)
+        print(f"\n🧵 Launching {NUM_THREADS} Turbo Workers...", flush=True)
         for _ in range(NUM_THREADS):
             t = threading.Thread(target=self.worker_loop, daemon=True)
             t.start()
@@ -387,11 +412,6 @@ class DBStockMonitor:
                     self.batch_queue.put(batch)
                 
                 self.batch_queue.join()
-                
-                if not self.use_python_mode:
-                    print("\n♻️  Restoring Stealth Mode...", flush=True)
-                    self.init_browser()
-                    self.sync_cookies()
                 
                 print(f"\n✅ Cycle Complete! Restarting...", flush=True)
                 time.sleep(CYCLE_DELAY)
