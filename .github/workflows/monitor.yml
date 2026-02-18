@@ -21,7 +21,10 @@ jobs:
     timeout-minutes: 350    
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout Code (with LFS)
+      uses: actions/checkout@v3
+      with:
+        lfs: true  # 👈 YEH FIX HAI: Isse asli database file download hogi
 
     - name: Set up Python
       uses: actions/setup-python@v4
