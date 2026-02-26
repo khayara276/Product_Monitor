@@ -9,6 +9,7 @@ import sqlite3
 import concurrent.futures
 import sys
 import subprocess
+import re  # Added regex module for image cleaning
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -36,7 +37,7 @@ HEADLESS_MODE = True
 # 50 Threads + Polymorphic Rotation = Max Speed
 NUM_THREADS = 50         
 BATCH_SIZE = 50         
-CYCLE_DELAY = 0.1       
+CYCLE_DELAY = 0.1        
 
 PRIORITY_SIZES = ["S", "M", "L","28","30", "32", "34"]
 
@@ -141,7 +142,9 @@ class DBStockMonitor:
     def get_clean_image_url(self, raw_url):
         if not raw_url: return None
         try:
-            clean_url = re.sub(r'_\d+x\d+', '', raw_url).replace('_thumbnail', '')
+            # Updated Regex to handle all thumbnail tags
+            clean_url = re.sub(r'[-_]?\d+[Ww]?x\d+[Hh]?[-_]?', '', raw_url)
+            clean_url = clean_url.replace('_thumbnail', '')
             if 'ajio.com' in clean_url: clean_url = clean_url.split('?')[0]
             return clean_url
         except: return raw_url
@@ -348,8 +351,26 @@ class DBStockMonitor:
                 self.stock_cache[pid] = current_sig
 
             if should_alert:
-                raw_img_url = data.get('selected', {}).get('modelImage', {}).get('url')
-                if not raw_img_url and 'images' in data and data['images']: raw_img_url = data['images'][0].get('url')
+                raw_img_url = None
+                
+                # HD Image extraction from JSON path
+                try:
+                    raw_img_url = data['baseOptions'][0]['options'][0]['modelImage']['url']
+                except Exception:
+                    pass
+                    
+                if not raw_img_url:
+                    try:
+                        raw_img_url = data['baseOptions'][0]['options'][0]['images'][0]['url']
+                    except Exception:
+                        pass
+                
+                # Fallbacks
+                if not raw_img_url:
+                    raw_img_url = data.get('selected', {}).get('modelImage', {}).get('url')
+                if not raw_img_url and 'images' in data and data['images']: 
+                    raw_img_url = data['images'][0].get('url')
+
                 hd_img_url = self.get_clean_image_url(raw_img_url)
                 buy_url = f"https://www.sheinindia.in/p/{pid}"
                 
